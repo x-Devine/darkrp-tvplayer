@@ -4,74 +4,70 @@
 <meta charset="utf-8">
 <title>DarkRP TV Player</title>
 <style>
-  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; height: 100%; }
-  iframe { border: 0; width: 100vw; height: 100vh; display: block; }
-  .err { color: #aaa; font-family: sans-serif; padding: 2em; text-align: center; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #000;
+    overflow: hidden;
+    height: 100%;
+    width: 100%;
+  }
+  iframe {
+    border: 0;
+    width: 100vw;
+    height: 100vh;
+    display: block;
+  }
+  .err {
+    color: #aaa;
+    font-family: sans-serif;
+    padding: 2em;
+    text-align: center;
+  }
 </style>
 </head>
 <body>
-<div id="player-container"></div>
 <script>
 (function () {
   var params = new URLSearchParams(location.search);
   var id = params.get('id') || '';
-  var wantUnmuted = params.get('mute') !== '1';
-  var volumeParam = parseInt(params.get('volume') || '100', 10);
-  if (isNaN(volumeParam) || volumeParam < 0) volumeParam = 100;
-  if (volumeParam > 100) volumeParam = 100;
 
+  // YouTube video IDs are 11 characters of [A-Za-z0-9_-], but we allow
+  // 6-64 to be tolerant of shorts/live/etc edge cases.
   if (!/^[a-zA-Z0-9_-]{6,64}$/.test(id)) {
-    document.body.innerHTML = '<div class="err">No video id provided.</div>';
+    document.body.innerHTML =
+      '<div class="err">No video id provided. ' +
+      'Usage: ?id=VIDEO_ID</div>';
     return;
   }
 
+  // Build the YouTube embed URL.
+  //   autoplay=1 + mute=1 — required together by modern browser
+  //     autoplay policies. Unmuted autoplay is not permitted.
+  //   playsinline=1 — prevents mobile from expanding fullscreen on play.
+  //   controls=1 — show YouTube's native player controls.
+  //   rel=0 — don't recommend unrelated videos at end.
+  //   modestbranding=1 — hide most YouTube branding.
+  //   iv_load_policy=3 — hide in-video annotations.
   var src =
     'https://www.youtube.com/embed/' + encodeURIComponent(id) +
     '?autoplay=1' +
     '&mute=1' +
     '&playsinline=1' +
     '&controls=1' +
-    '&enablejsapi=1' +
     '&rel=0' +
     '&modestbranding=1' +
     '&iv_load_policy=3';
 
   var iframe = document.createElement('iframe');
-  iframe.setAttribute('src', src);
-  iframe.setAttribute('allow', 'autoplay; accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share');
-  iframe.setAttribute('allowfullscreen', '');
-  iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
-  iframe.setAttribute('title', 'YouTube player');
-  iframe.id = 'yt-iframe';
-  document.getElementById('player-container').appendChild(iframe);
-
-  if (!wantUnmuted) return; // nothing else to do; stays muted
-
-  // Load IFrame API to programmatically unmute after playback starts.
-  var tag = document.createElement('script');
-  tag.src = 'https://www.youtube.com/iframe_api';
-  document.head.appendChild(tag);
-
-  window.onYouTubeIframeAPIReady = function () {
-    try {
-      new YT.Player('yt-iframe', {
-        events: {
-          'onStateChange': function (e) {
-            // State 1 = PLAYING. First time we see the video actually
-            // playing, unmute it and set volume. Do NOT call playVideo()
-            // or pauseVideo() — let the autoplay=1 param handle that.
-            if (e.data === 1 && !window.__alreadyUnmuted) {
-              window.__alreadyUnmuted = true;
-              try {
-                e.target.setVolume(volumeParam);
-                e.target.unMute();
-              } catch (err) {}
-            }
-          }
-        }
-      });
-    } catch (err) {}
-  };
+  iframe.src = src;
+  iframe.allow =
+    'autoplay; accelerometer; clipboard-write; ' +
+    'encrypted-media; gyroscope; picture-in-picture; web-share';
+  iframe.allowFullscreen = true;
+  iframe.referrerPolicy = 'strict-origin-when-cross-origin';
+  iframe.title = 'YouTube player';
+  document.body.appendChild(iframe);
 })();
 </script>
 </body>
