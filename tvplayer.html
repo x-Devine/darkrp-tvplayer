@@ -16,7 +16,6 @@
   var params = new URLSearchParams(location.search);
   var id = params.get('id') || '';
   var wantUnmuted = params.get('mute') !== '1';
-  // Allow caller to override volume. Default 100.
   var volumeParam = parseInt(params.get('volume') || '100', 10);
   if (isNaN(volumeParam) || volumeParam < 0) volumeParam = 100;
   if (volumeParam > 100) volumeParam = 100;
@@ -46,47 +45,27 @@
   iframe.id = 'yt-iframe';
   document.getElementById('player-container').appendChild(iframe);
 
+  if (!wantUnmuted) return; // nothing else to do; stays muted
+
+  // Load IFrame API to programmatically unmute after playback starts.
   var tag = document.createElement('script');
   tag.src = 'https://www.youtube.com/iframe_api';
   document.head.appendChild(tag);
 
   window.onYouTubeIframeAPIReady = function () {
     try {
-      var player = new YT.Player('yt-iframe', {
+      new YT.Player('yt-iframe', {
         events: {
-          'onReady': function (e) {
-            try { e.target.playVideo(); } catch (err) {}
-
-            if (!wantUnmuted) return;
-
-            // Force unmute + volume repeatedly.
-            // Some browsers restore pre-mute volume on unmute (which is 0
-            // since we started muted), so we have to keep setting it.
-            var ticks = 0;
-            var interval = setInterval(function () {
-              ticks++;
-              try {
-                e.target.unMute();
-                e.target.setVolume(volumeParam);
-              } catch (err) {}
-              if (ticks > 10) clearInterval(interval);
-            }, 300);
-          },
           'onStateChange': function (e) {
-            if (!wantUnmuted) return;
-            // State 1 = playing. Each time playback starts, reassert volume.
-            if (e.data === 1) {
+            // State 1 = PLAYING. First time we see the video actually
+            // playing, unmute it and set volume. Do NOT call playVideo()
+            // or pauseVideo() — let the autoplay=1 param handle that.
+            if (e.data === 1 && !window.__alreadyUnmuted) {
+              window.__alreadyUnmuted = true;
               try {
-                e.target.unMute();
                 e.target.setVolume(volumeParam);
+                e.target.unMute();
               } catch (err) {}
-              // Also reassert after a short delay, in case YouTube clobbers it.
-              setTimeout(function () {
-                try {
-                  e.target.unMute();
-                  e.target.setVolume(volumeParam);
-                } catch (err) {}
-              }, 500);
             }
           }
         }
