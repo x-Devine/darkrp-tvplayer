@@ -27,10 +27,15 @@
 </style>
 </head>
 <body>
+<div id="player-container"></div>
 <script>
 (function () {
   var params = new URLSearchParams(location.search);
   var id = params.get('id') || '';
+  var wantMuted = params.get('mute') === '1';
+  var volume = parseInt(params.get('volume') || '100', 10);
+  if (isNaN(volume) || volume < 0) volume = 0;
+  if (volume > 100) volume = 100;
 
   if (!/^[a-zA-Z0-9_-]{6,64}$/.test(id)) {
     document.body.innerHTML =
@@ -38,34 +43,66 @@
     return;
   }
 
-  // No autoplay — we want user-gesture (click via sbox's TellMouseButton)
-  // to be what starts playback. That lets the audio play unmuted.
-  //   autoplay=0  — don't auto-start
-  //   mute=0      — unmuted when playback begins
-  //   controls=1  — show YouTube's native controls
-  //   playsinline=1
-  //   rel=0       — no related videos
-  //   modestbranding=1
-  //   iv_load_policy=3 — hide annotations
+  // No autoplay, no mute (by default) — the user's E-click in sbox becomes
+  // the user gesture that starts playback. This lets audio play with sound.
+  // &enablejsapi=1 is required so our script can call setVolume() on the player.
   var src =
     'https://www.youtube.com/embed/' + encodeURIComponent(id) +
     '?autoplay=0' +
-    '&mute=0' +
+    '&mute=' + (wantMuted ? '1' : '0') +
     '&playsinline=1' +
     '&controls=1' +
+    '&enablejsapi=1' +
     '&rel=0' +
     '&modestbranding=1' +
     '&iv_load_policy=3';
 
   var iframe = document.createElement('iframe');
-  iframe.src = src;
-  iframe.allow =
+  iframe.setAttribute('src', src);
+  iframe.setAttribute('allow',
     'autoplay; accelerometer; clipboard-write; ' +
-    'encrypted-media; gyroscope; picture-in-picture; web-share';
-  iframe.allowFullscreen = true;
-  iframe.referrerPolicy = 'strict-origin-when-cross-origin';
-  iframe.title = 'YouTube player';
-  document.body.appendChild(iframe);
+    'encrypted-media; gyroscope; picture-in-picture; web-share');
+  iframe.setAttribute('allowfullscreen', '');
+  iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+  iframe.setAttribute('title', 'YouTube player');
+  iframe.id = 'yt-iframe';
+  document.getElementById('player-container').appendChild(iframe);
+
+  // Skip all IFrame API setup if we just want default behavior (full volume, not muted).
+  // We only load the API if the game asked for a non-default volume or muted state,
+  // since attaching the API can sometimes cause brief pause glitches.
+  if (volume === 100 && !wantMuted) return;
+
+  // Load the IFrame API so we can call setVolume() when the player is ready.
+  var tag = document.createElement('script');
+  tag.src = 'https://www.youtube.com/iframe_api';
+  document.head.appendChild(tag);
+
+  window.onYouTubeIframeAPIReady = function () {
+    try {
+      new YT.Player('yt-iframe', {
+        events: {
+          'onReady': function (e) {
+            applyVolume(e.target);
+          },
+          'onStateChange': function (e) {
+            // When playback starts (state 1), reassert the volume once.
+            // Some browsers reset volume on unmute transitions.
+            if (e.data === 1) applyVolume(e.target);
+          }
+        }
+      });
+    } catch (err) {}
+  };
+
+  function applyVolume(player) {
+    try {
+      player.setVolume(volume);
+      // If we're not supposed to be muted, make sure we aren't.
+      // (YouTube keeps a separate mute flag from volume level.)
+      if (!wantMuted) player.unMute();
+    } catch (err) {}
+  }
 })();
 </script>
 </body>
