@@ -15,29 +15,26 @@
 (function () {
   var params = new URLSearchParams(location.search);
   var id = params.get('id') || '';
-
-  // Sbox's WebSurface can't synthesize user gestures, so autoplay with
-  // sound is effectively impossible. We force mute=1 regardless of the
-  // mute param to guarantee autoplay actually kicks off.
-  // If `mute=0` is passed, the video will still autoplay muted and a
-  // viewer with real input could unmute via the YouTube controls.
-  var forceMuted = '1';
+  // User can pass &mute=0 to attempt unmuted playback after autoplay starts.
+  var wantUnmuted = params.get('mute') !== '1';
 
   if (!/^[a-zA-Z0-9_-]{6,64}$/.test(id)) {
     document.body.innerHTML = '<div class="err">No video id provided.</div>';
     return;
   }
 
+  // Always start muted — browsers block unmuted autoplay without user gesture.
+  // If the caller wants sound, we'll try to unmute after playback begins.
   var src =
     'https://www.youtube.com/embed/' + encodeURIComponent(id) +
     '?autoplay=1' +
-    '&mute=' + forceMuted +
+    '&mute=1' +
     '&playsinline=1' +
     '&controls=1' +
     '&enablejsapi=1' +
     '&rel=0' +
     '&modestbranding=1' +
-    '&iv_load_policy=3';  // hide annotations
+    '&iv_load_policy=3';
 
   var iframe = document.createElement('iframe');
   iframe.setAttribute('src', src);
@@ -48,9 +45,6 @@
   iframe.id = 'yt-iframe';
   document.getElementById('player-container').appendChild(iframe);
 
-  // Load YouTube IFrame API and use it to explicitly trigger playback.
-  // Redundant with autoplay=1 but sometimes the extra kick helps when
-  // an embed is slow to initialize.
   var tag = document.createElement('script');
   tag.src = 'https://www.youtube.com/iframe_api';
   document.head.appendChild(tag);
@@ -61,9 +55,38 @@
         events: {
           'onReady': function (e) {
             try {
-              e.target.mute();
               e.target.playVideo();
+              // Try to unmute after playback is actually running.
+              // Browsers may still refuse, but we can try a few times.
+              if (wantUnmuted) {
+                var attempts = 0;
+                var tryUnmute = function () {
+                  attempts++;
+                  try {
+                    e.target.unMute();
+                    e.target.setVolume(100);
+                  } catch (err) {}
+                  // Check if we're actually unmuted; if not, try again.
+                  setTimeout(function () {
+                    try {
+                      if (e.target.isMuted && e.target.isMuted() && attempts < 5) {
+                        tryUnmute();
+                      }
+                    } catch (err) {}
+                  }, 500);
+                };
+                setTimeout(tryUnmute, 1000);
+              }
             } catch (err) {}
+          },
+          'onStateChange': function (e) {
+            // When the video starts playing (state 1), try unmute again.
+            if (e.data === 1 && wantUnmuted) {
+              try {
+                e.target.unMute();
+                e.target.setVolume(100);
+              } catch (err) {}
+            }
           }
         }
       });
