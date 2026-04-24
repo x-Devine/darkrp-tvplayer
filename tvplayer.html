@@ -15,16 +15,17 @@
 (function () {
   var params = new URLSearchParams(location.search);
   var id = params.get('id') || '';
-  // User can pass &mute=0 to attempt unmuted playback after autoplay starts.
   var wantUnmuted = params.get('mute') !== '1';
+  // Allow caller to override volume. Default 100.
+  var volumeParam = parseInt(params.get('volume') || '100', 10);
+  if (isNaN(volumeParam) || volumeParam < 0) volumeParam = 100;
+  if (volumeParam > 100) volumeParam = 100;
 
   if (!/^[a-zA-Z0-9_-]{6,64}$/.test(id)) {
     document.body.innerHTML = '<div class="err">No video id provided.</div>';
     return;
   }
 
-  // Always start muted — browsers block unmuted autoplay without user gesture.
-  // If the caller wants sound, we'll try to unmute after playback begins.
   var src =
     'https://www.youtube.com/embed/' + encodeURIComponent(id) +
     '?autoplay=1' +
@@ -54,38 +55,38 @@
       var player = new YT.Player('yt-iframe', {
         events: {
           'onReady': function (e) {
-            try {
-              e.target.playVideo();
-              // Try to unmute after playback is actually running.
-              // Browsers may still refuse, but we can try a few times.
-              if (wantUnmuted) {
-                var attempts = 0;
-                var tryUnmute = function () {
-                  attempts++;
-                  try {
-                    e.target.unMute();
-                    e.target.setVolume(100);
-                  } catch (err) {}
-                  // Check if we're actually unmuted; if not, try again.
-                  setTimeout(function () {
-                    try {
-                      if (e.target.isMuted && e.target.isMuted() && attempts < 5) {
-                        tryUnmute();
-                      }
-                    } catch (err) {}
-                  }, 500);
-                };
-                setTimeout(tryUnmute, 1000);
-              }
-            } catch (err) {}
-          },
-          'onStateChange': function (e) {
-            // When the video starts playing (state 1), try unmute again.
-            if (e.data === 1 && wantUnmuted) {
+            try { e.target.playVideo(); } catch (err) {}
+
+            if (!wantUnmuted) return;
+
+            // Force unmute + volume repeatedly.
+            // Some browsers restore pre-mute volume on unmute (which is 0
+            // since we started muted), so we have to keep setting it.
+            var ticks = 0;
+            var interval = setInterval(function () {
+              ticks++;
               try {
                 e.target.unMute();
-                e.target.setVolume(100);
+                e.target.setVolume(volumeParam);
               } catch (err) {}
+              if (ticks > 10) clearInterval(interval);
+            }, 300);
+          },
+          'onStateChange': function (e) {
+            if (!wantUnmuted) return;
+            // State 1 = playing. Each time playback starts, reassert volume.
+            if (e.data === 1) {
+              try {
+                e.target.unMute();
+                e.target.setVolume(volumeParam);
+              } catch (err) {}
+              // Also reassert after a short delay, in case YouTube clobbers it.
+              setTimeout(function () {
+                try {
+                  e.target.unMute();
+                  e.target.setVolume(volumeParam);
+                } catch (err) {}
+              }, 500);
             }
           }
         }
