@@ -10,13 +10,19 @@
 </style>
 </head>
 <body>
+<div id="player-container"></div>
 <script>
 (function () {
   var params = new URLSearchParams(location.search);
   var id = params.get('id') || '';
-  var mute = params.get('mute') === '1' ? '1' : '0';
 
-  // Simple ID sanity check (YouTube IDs are alphanumeric plus - and _)
+  // Sbox's WebSurface can't synthesize user gestures, so autoplay with
+  // sound is effectively impossible. We force mute=1 regardless of the
+  // mute param to guarantee autoplay actually kicks off.
+  // If `mute=0` is passed, the video will still autoplay muted and a
+  // viewer with real input could unmute via the YouTube controls.
+  var forceMuted = '1';
+
   if (!/^[a-zA-Z0-9_-]{6,64}$/.test(id)) {
     document.body.innerHTML = '<div class="err">No video id provided.</div>';
     return;
@@ -25,19 +31,44 @@
   var src =
     'https://www.youtube.com/embed/' + encodeURIComponent(id) +
     '?autoplay=1' +
-    '&mute=' + mute +
+    '&mute=' + forceMuted +
     '&playsinline=1' +
+    '&controls=1' +
     '&enablejsapi=1' +
     '&rel=0' +
-    '&modestbranding=1';
+    '&modestbranding=1' +
+    '&iv_load_policy=3';  // hide annotations
 
   var iframe = document.createElement('iframe');
   iframe.setAttribute('src', src);
-  iframe.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share');
+  iframe.setAttribute('allow', 'autoplay; accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share');
   iframe.setAttribute('allowfullscreen', '');
   iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
   iframe.setAttribute('title', 'YouTube player');
-  document.body.appendChild(iframe);
+  iframe.id = 'yt-iframe';
+  document.getElementById('player-container').appendChild(iframe);
+
+  // Load YouTube IFrame API and use it to explicitly trigger playback.
+  // Redundant with autoplay=1 but sometimes the extra kick helps when
+  // an embed is slow to initialize.
+  var tag = document.createElement('script');
+  tag.src = 'https://www.youtube.com/iframe_api';
+  document.head.appendChild(tag);
+
+  window.onYouTubeIframeAPIReady = function () {
+    try {
+      var player = new YT.Player('yt-iframe', {
+        events: {
+          'onReady': function (e) {
+            try {
+              e.target.mute();
+              e.target.playVideo();
+            } catch (err) {}
+          }
+        }
+      });
+    } catch (err) {}
+  };
 })();
 </script>
 </body>
