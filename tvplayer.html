@@ -32,27 +32,25 @@
   var params = new URLSearchParams(location.search);
   var id = params.get('id') || '';
 
-  // YouTube video IDs are 11 characters of [A-Za-z0-9_-], but we allow
-  // 6-64 to be tolerant of shorts/live/etc edge cases.
   if (!/^[a-zA-Z0-9_-]{6,64}$/.test(id)) {
     document.body.innerHTML =
-      '<div class="err">No video id provided. ' +
-      'Usage: ?id=VIDEO_ID</div>';
+      '<div class="err">No video id provided. Usage: ?id=VIDEO_ID</div>';
     return;
   }
 
-  // Build the YouTube embed URL.
-  //   autoplay=1 + mute=1 — required together by modern browser
-  //     autoplay policies. Unmuted autoplay is not permitted.
-  //   playsinline=1 — prevents mobile from expanding fullscreen on play.
-  //   controls=1 — show YouTube's native player controls.
-  //   rel=0 — don't recommend unrelated videos at end.
-  //   modestbranding=1 — hide most YouTube branding.
-  //   iv_load_policy=3 — hide in-video annotations.
+  // No autoplay — we want user-gesture (click via sbox's TellMouseButton)
+  // to be what starts playback. That lets the audio play unmuted.
+  //   autoplay=0  — don't auto-start
+  //   mute=0      — unmuted when playback begins
+  //   controls=1  — show YouTube's native controls
+  //   playsinline=1
+  //   rel=0       — no related videos
+  //   modestbranding=1
+  //   iv_load_policy=3 — hide annotations
   var src =
     'https://www.youtube.com/embed/' + encodeURIComponent(id) +
-    '?autoplay=1' +
-    '&mute=1' +
+    '?autoplay=0' +
+    '&mute=0' +
     '&playsinline=1' +
     '&controls=1' +
     '&rel=0' +
