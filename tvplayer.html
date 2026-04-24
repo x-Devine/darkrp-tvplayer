@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>DarkRP TV Player</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; height: 100%; }
+  iframe { border: 0; width: 100vw; height: 100vh; display: block; }
+  .err { color: #aaa; font-family: sans-serif; padding: 2em; text-align: center; }
+</style>
+</head>
+<body>
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var id = params.get('id') || '';
+  var mute = params.get('mute') === '1' ? '1' : '0';
+
+  // Simple ID sanity check (YouTube IDs are alphanumeric plus - and _)
+  if (!/^[a-zA-Z0-9_-]{6,64}$/.test(id)) {
+    document.body.innerHTML = '<div class="err">No video id provided.</div>';
+    return;
+  }
+
+  var src =
+    'https://www.youtube.com/embed/' + encodeURIComponent(id) +
+    '?autoplay=1' +
+    '&mute=' + mute +
+    '&playsinline=1' +
+    '&enablejsapi=1' +
+    '&rel=0' +
+    '&modestbranding=1';
+
+  var iframe = document.createElement('iframe');
+  iframe.setAttribute('src', src);
+  iframe.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share');
+  iframe.setAttribute('allowfullscreen', '');
+  iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+  iframe.setAttribute('title', 'YouTube player');
+  document.body.appendChild(iframe);
+})();
+</script>
+</body>
+</html>
