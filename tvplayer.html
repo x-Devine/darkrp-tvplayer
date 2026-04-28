@@ -4,15 +4,34 @@
 <meta charset="utf-8">
 <title>DarkRP TV Player</title>
 <style>
-  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; height: 100%; }
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; height: 100%; font-family: monospace; }
   iframe { border: 0; width: 100vw; height: 100vh; display: block; }
-  .err { color: #aaa; font-family: sans-serif; padding: 2em; text-align: center; }
+  .err { color: #aaa; padding: 2em; text-align: center; }
+  #debug-overlay {
+    position: fixed; top: 4px; left: 4px;
+    background: rgba(0,0,0,0.65);
+    color: #0f0; font-size: 10px;
+    padding: 2px 6px; max-width: 60%;
+    pointer-events: none; z-index: 9999;
+    line-height: 1.3;
+  }
+  #debug-overlay.fade { opacity: 0; transition: opacity 1s; }
 </style>
 </head>
 <body>
 <div id="player-container"></div>
+<div id="debug-overlay">init...</div>
 <script>
 (function () {
+  var dbg = document.getElementById('debug-overlay');
+  var lines = [];
+  function log(msg) {
+    lines.push(msg);
+    if (lines.length > 6) lines.shift();
+    dbg.textContent = lines.join(' | ');
+  }
+  setTimeout(function () { dbg.classList.add('fade'); }, 30000);
+
   var params = new URLSearchParams(location.search);
   var id = params.get('id') || '';
   var wantUnmuted = params.get('mute') !== '1';
@@ -21,24 +40,12 @@
     document.body.innerHTML = '<div class="err">No video id provided.</div>';
     return;
   }
+  log('id=' + id);
 
-  // ── OPTION A: youtube-nocookie domain ───────────────────────────
-  // The privacy-enhanced YouTube domain serves fewer pre-rolls on a lot
-  // of indie/music/casual content — same player, less aggressive ad
-  // serving. Big commercial channels still get pre-rolls (YouTube
-  // controls the ad pipeline at a higher level than the embed domain),
-  // but for the median in-game-TV use case this drops a noticeable
-  // chunk of ads with zero downside.
   var src =
     'https://www.youtube-nocookie.com/embed/' + encodeURIComponent(id) +
-    '?autoplay=1' +
-    '&mute=1' +
-    '&playsinline=1' +
-    '&controls=1' +
-    '&enablejsapi=1' +
-    '&rel=0' +
-    '&modestbranding=1' +
-    '&iv_load_policy=3';
+    '?autoplay=1&mute=1&playsinline=1&controls=1&enablejsapi=1' +
+    '&rel=0&modestbranding=1&iv_load_policy=3';
 
   var iframe = document.createElement('iframe');
   iframe.setAttribute('src', src);
@@ -48,30 +55,21 @@
   iframe.setAttribute('title', 'YouTube player');
   iframe.id = 'yt-iframe';
   document.getElementById('player-container').appendChild(iframe);
+  log('iframe added');
 
   var tag = document.createElement('script');
   tag.src = 'https://www.youtube.com/iframe_api';
+  tag.onload = function () { log('api loaded'); };
+  tag.onerror = function () { log('API LOAD FAILED'); };
   document.head.appendChild(tag);
 
-  // ── OPTION D: ad-skip helper ────────────────────────────────────
-  // YouTube's IFrame API surfaces an undocumented but historically-
-  // stable signal during ads: getVideoData().video_id changes to a
-  // different ID temporarily while the ad plays, then reverts to the
-  // requested video. We watch for that mismatch and seek/skip when
-  // detected.
-  //
-  // Fallback heuristic: if the video has been "playing" for more than
-  // ~10 seconds and the elapsed time is still under 6 seconds, the
-  // wrapper is likely showing a pre-roll. We bump the player past it.
-  //
-  // Both checks are best-effort — when YouTube changes their internals
-  // (which they do every few months), this code degrades gracefully:
-  // no errors, just stops working for ad-skipping. The video itself
-  // still plays via autoplay=1.
+  var apiReady = false;
+  setTimeout(function () { if (!apiReady) log('api ready TIMEOUT'); }, 8000);
+
   function startAdSkipper(player, requestedId) {
-    var lastCheck = 0;
-    var stuckSinceMs = 0;
+    log('skipper armed');
     var loadedAt = Date.now();
+    var lastSeek = 0;
 
     setInterval(function () {
       try {
@@ -81,35 +79,26 @@
         var duration = player.getDuration && player.getDuration();
         var state = player.getPlayerState && player.getPlayerState();
 
-        // Signal 1: video_id mismatch = ad is playing.
-        // Skip past where the ad would end. Most pre-rolls are 6-30s.
-        // We seek to just before the ad would naturally end so the
-        // user doesn't lose any actual content if seekTo lands inside
-        // the requested video.
         if (currentVidId && currentVidId !== requestedId) {
+          log('AD vid=' + currentVidId);
           try {
-            // Try the most direct approach: seekTo near end of ad.
-            // If duration is short (likely an ad), seek to its end.
             if (duration && duration < 60) {
               player.seekTo(Math.max(0, duration - 0.5), true);
-            }
-            // Fallback: just bump 30 seconds forward and hope.
-            else if (currentTime !== undefined) {
+              log('seek end');
+            } else if (currentTime !== undefined) {
               player.seekTo(currentTime + 30, true);
+              log('seek +30');
             }
-          } catch (e) {}
+          } catch (e) { log('seek err'); }
         }
 
-        // Signal 2: stuck-on-low-elapsed-time heuristic.
-        // If we've been "playing" (state 1) for >10s wall clock but
-        // currentTime is still <6s, something's not advancing — usually
-        // a pre-roll. Bump past it.
         if (state === 1 && currentTime !== undefined) {
           var wallElapsed = (Date.now() - loadedAt) / 1000;
-          if (wallElapsed > 10 && currentTime < 6 && wallElapsed - lastCheck > 5) {
+          if (wallElapsed > 10 && currentTime < 6 && wallElapsed - lastSeek > 5) {
             try {
               player.seekTo(currentTime + 7, true);
-              lastCheck = wallElapsed;
+              lastSeek = wallElapsed;
+              log('stuck bump');
             } catch (e) {}
           }
         }
@@ -118,18 +107,16 @@
   }
 
   window.onYouTubeIframeAPIReady = function () {
+    apiReady = true;
+    log('api READY');
     try {
       var player = new YT.Player('yt-iframe', {
         events: {
           'onReady': function (e) {
+            log('player ready');
             try {
               e.target.playVideo();
-
-              // Start the ad-skipper a couple seconds in so the player
-              // has time to actually load before we start poking at it.
-              setTimeout(function () {
-                startAdSkipper(e.target, id);
-              }, 2000);
+              setTimeout(function () { startAdSkipper(e.target, id); }, 2000);
 
               if (wantUnmuted) {
                 var attempts = 0;
@@ -149,7 +136,7 @@
                 };
                 setTimeout(tryUnmute, 1000);
               }
-            } catch (err) {}
+            } catch (err) { log('ready err'); }
           },
           'onStateChange': function (e) {
             if (e.data === 1 && wantUnmuted) {
@@ -161,7 +148,7 @@
           }
         }
       });
-    } catch (err) {}
+    } catch (err) { log('YT.Player err'); }
   };
 })();
 </script>
