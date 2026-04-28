@@ -4,34 +4,15 @@
 <meta charset="utf-8">
 <title>DarkRP TV Player</title>
 <style>
-  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; height: 100%; font-family: monospace; }
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; height: 100%; }
   iframe { border: 0; width: 100vw; height: 100vh; display: block; }
-  .err { color: #aaa; padding: 2em; text-align: center; }
-  #debug-overlay {
-    position: fixed; top: 4px; left: 4px;
-    background: rgba(0,0,0,0.65);
-    color: #0f0; font-size: 10px;
-    padding: 2px 6px; max-width: 60%;
-    pointer-events: none; z-index: 9999;
-    line-height: 1.3;
-  }
-  #debug-overlay.fade { opacity: 0; transition: opacity 1s; }
+  .err { color: #aaa; font-family: sans-serif; padding: 2em; text-align: center; }
 </style>
 </head>
 <body>
 <div id="player-container"></div>
-<div id="debug-overlay">init...</div>
 <script>
 (function () {
-  var dbg = document.getElementById('debug-overlay');
-  var lines = [];
-  function log(msg) {
-    lines.push(msg);
-    if (lines.length > 8) lines.shift();
-    dbg.textContent = lines.join(' | ');
-  }
-  setTimeout(function () { dbg.classList.add('fade'); }, 60000);
-
   var params = new URLSearchParams(location.search);
   var id = params.get('id') || '';
   var wantUnmuted = params.get('mute') !== '1';
@@ -40,8 +21,10 @@
     document.body.innerHTML = '<div class="err">No video id provided.</div>';
     return;
   }
-  log('id=' + id);
 
+  // youtube-nocookie reduces ad serving on a lot of indie/music content
+  // vs the public youtube.com domain. Same player, fewer pre-rolls on
+  // the median in-game-TV use case.
   var src =
     'https://www.youtube-nocookie.com/embed/' + encodeURIComponent(id) +
     '?autoplay=1&mute=1&playsinline=1&controls=1&enablejsapi=1' +
@@ -55,45 +38,21 @@
   iframe.setAttribute('title', 'YouTube player');
   iframe.id = 'yt-iframe';
   document.getElementById('player-container').appendChild(iframe);
-  log('iframe added');
 
   var tag = document.createElement('script');
   tag.src = 'https://www.youtube.com/iframe_api';
-  tag.onload = function () { log('api loaded'); };
-  tag.onerror = function () { log('API LOAD FAILED'); };
   document.head.appendChild(tag);
 
-  var apiReady = false;
-  setTimeout(function () { if (!apiReady) log('api ready TIMEOUT'); }, 8000);
-
-  // ── v3 multi-signal ad detection ─────────────────────────────────
-  // The single video_id-mismatch signal stopped being reliable as
-  // YouTube tightened ad reporting through their public IFrame API.
-  // This version checks SIX independent signals each tick and treats
-  // ANY of them firing as "ad is playing":
-  //
-  // 1. video_id mismatch (legacy signal — still works on some ads)
-  // 2. Duration < 60s on a video known to be longer (ad creative override)
-  // 3. Title prefix "Ad: " or "Advertisement"
-  // 4. video_url contains /ad/ or /pagead/ tokens
-  // 5. Duration is a "round" 5/6/15/30s — common ad lengths — within
-  //    the first 30s of session
-  // 6. Author/channel different from expected (most ads override author)
-  //
-  // We snapshot the FIRST observed video_id + author and treat any
-  // change to those as a sign we're in an ad. Pure pre-rolls show ad
-  // metadata BEFORE the requested video metadata loads, so we also
-  // hold off on snapshotting until we've seen 8+ seconds of stable
-  // playback.
+  // Multi-signal ad detection. Modern YouTube (2026) suppresses most
+  // public-API ad signals to defeat client-side skippers, so this rarely
+  // fires — but the cost of having it run is near-zero, and on the
+  // occasional video where YouTube DOES leak a signal we get a free skip.
+  // When ads are detected we also bump playback rate to 2x so even a
+  // failed seek burns through the ad twice as fast.
   function startAdSkipper(player, requestedId) {
-    log('skipper armed');
     var loadedAt = Date.now();
     var lastSeek = 0;
-    var snapshot = null;     // captured after stable playback
-    var prevId = null;
-    var prevTitle = null;
-    var stableSince = 0;
-    var seekCount = 0;
+    var snapshot = null;
 
     setInterval(function () {
       try {
@@ -102,7 +61,6 @@
 
         var currentVidId = data.video_id;
         var currentTitle = data.title || '';
-        var currentAuthor = data.author || '';
         var currentTime = (player.getCurrentTime && player.getCurrentTime()) || 0;
         var duration = (player.getDuration && player.getDuration()) || 0;
         var state = player.getPlayerState && player.getPlayerState();
@@ -110,12 +68,9 @@
 
         var adReason = null;
 
-        // Signal 1: video_id mismatch with what was requested
         if (currentVidId && currentVidId !== requestedId) {
           adReason = 'mismatch';
         }
-
-        // Signal 2: title clearly indicates ad
         if (!adReason && currentTitle) {
           var t = currentTitle.toLowerCase();
           if (t.indexOf('ad:') === 0 || t.indexOf('advertisement') !== -1
@@ -123,81 +78,45 @@
             adReason = 'title';
           }
         }
-
-        // Signal 3: very short duration (ads are usually 5-30s)
-        // — only suspect if we're early in the session
         if (!adReason && duration > 0 && duration < 35 && wallElapsed < 45) {
           adReason = 'short_dur';
         }
-
-        // Signal 4: snapshot-based change detection.
-        // Once we've seen 8s of stable playback with a consistent ID
-        // matching the requested ID, snapshot it. Any subsequent change
-        // back to a different ID = mid-roll ad.
         if (!snapshot && currentVidId === requestedId
             && state === 1 && currentTime > 8) {
-          snapshot = {
-            vidId: currentVidId,
-            author: currentAuthor,
-            duration: duration,
-          };
-          log('snapshot taken');
+          snapshot = { vidId: currentVidId, duration: duration };
         }
         if (!adReason && snapshot && currentVidId
             && currentVidId !== snapshot.vidId) {
           adReason = 'snap_change';
         }
-
-        // Signal 5: stuck-on-low-elapsed-time
         if (!adReason && state === 1 && wallElapsed > 10
             && currentTime < 6 && wallElapsed - lastSeek > 4) {
           adReason = 'stuck';
         }
 
-        // ── Ad detected — fire skip ──
         if (adReason && wallElapsed - lastSeek > 1) {
-          log('AD ' + adReason + ' d=' + Math.round(duration));
-          seekCount++;
           try {
-            // Most reliable path: jump to near the end of the ad's
-            // own duration. Browser will then auto-advance to the
-            // next clip (which is hopefully the real video).
             if (duration > 0 && duration < 90) {
               player.seekTo(Math.max(0, duration - 0.3), true);
-              log('seek end ' + Math.round(duration));
             } else if (currentTime < 30) {
               player.seekTo(currentTime + 30, true);
-              log('seek +30');
             }
             lastSeek = wallElapsed;
-
-            // Bonus: rate-up the playback so even if seek fails the
-            // ad burns through faster. 2x is the API's max.
             try { player.setPlaybackRate(2); } catch (e) {}
-          } catch (e) { log('seek err'); }
+          } catch (e) {}
         } else if (!adReason && currentVidId === requestedId
                    && currentTime > 2) {
-          // Not in an ad — make sure playback rate is back to normal
           try { player.setPlaybackRate(1); } catch (e) {}
-        }
-
-        // Track changes for the ID-change detector
-        if (currentVidId && currentVidId !== prevId) {
-          log('vid->' + currentVidId.substr(0, 6));
-          prevId = currentVidId;
         }
       } catch (e) {}
     }, 500);
   }
 
   window.onYouTubeIframeAPIReady = function () {
-    apiReady = true;
-    log('api READY');
     try {
       var player = new YT.Player('yt-iframe', {
         events: {
           'onReady': function (e) {
-            log('player ready');
             try {
               e.target.playVideo();
               setTimeout(function () { startAdSkipper(e.target, id); }, 1500);
@@ -220,7 +139,7 @@
                 };
                 setTimeout(tryUnmute, 1000);
               }
-            } catch (err) { log('ready err'); }
+            } catch (err) {}
           },
           'onStateChange': function (e) {
             if (e.data === 1 && wantUnmuted) {
@@ -232,7 +151,7 @@
           }
         }
       });
-    } catch (err) { log('YT.Player err'); }
+    } catch (err) {}
   };
 })();
 </script>
