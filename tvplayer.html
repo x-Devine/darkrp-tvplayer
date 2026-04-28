@@ -4,26 +4,9 @@
 <meta charset="utf-8">
 <title>DarkRP TV Player</title>
 <style>
-  html, body {
-    margin: 0;
-    padding: 0;
-    background: #000;
-    overflow: hidden;
-    height: 100%;
-    width: 100%;
-  }
-  iframe {
-    border: 0;
-    width: 100vw;
-    height: 100vh;
-    display: block;
-  }
-  .err {
-    color: #aaa;
-    font-family: sans-serif;
-    padding: 2em;
-    text-align: center;
-  }
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; height: 100%; }
+  iframe { border: 0; width: 100vw; height: 100vh; display: block; }
+  .err { color: #aaa; font-family: sans-serif; padding: 2em; text-align: center; }
 </style>
 </head>
 <body>
@@ -32,24 +15,24 @@
 (function () {
   var params = new URLSearchParams(location.search);
   var id = params.get('id') || '';
-  var wantMuted = params.get('mute') === '1';
-  var volume = parseInt(params.get('volume') || '100', 10);
-  if (isNaN(volume) || volume < 0) volume = 0;
-  if (volume > 100) volume = 100;
+  var wantUnmuted = params.get('mute') !== '1';
 
   if (!/^[a-zA-Z0-9_-]{6,64}$/.test(id)) {
-    document.body.innerHTML =
-      '<div class="err">No video id provided. Usage: ?id=VIDEO_ID</div>';
+    document.body.innerHTML = '<div class="err">No video id provided.</div>';
     return;
   }
 
-  // No autoplay, no mute (by default) — the user's E-click in sbox becomes
-  // the user gesture that starts playback. This lets audio play with sound.
-  // &enablejsapi=1 is required so our script can call setVolume() on the player.
+  // ── OPTION A: youtube-nocookie domain ───────────────────────────
+  // The privacy-enhanced YouTube domain serves fewer pre-rolls on a lot
+  // of indie/music/casual content — same player, less aggressive ad
+  // serving. Big commercial channels still get pre-rolls (YouTube
+  // controls the ad pipeline at a higher level than the embed domain),
+  // but for the median in-game-TV use case this drops a noticeable
+  // chunk of ads with zero downside.
   var src =
-    'https://www.youtube.com/embed/' + encodeURIComponent(id) +
-    '?autoplay=0' +
-    '&mute=' + (wantMuted ? '1' : '0') +
+    'https://www.youtube-nocookie.com/embed/' + encodeURIComponent(id) +
+    '?autoplay=1' +
+    '&mute=1' +
     '&playsinline=1' +
     '&controls=1' +
     '&enablejsapi=1' +
@@ -59,50 +42,127 @@
 
   var iframe = document.createElement('iframe');
   iframe.setAttribute('src', src);
-  iframe.setAttribute('allow',
-    'autoplay; accelerometer; clipboard-write; ' +
-    'encrypted-media; gyroscope; picture-in-picture; web-share');
+  iframe.setAttribute('allow', 'autoplay; accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share');
   iframe.setAttribute('allowfullscreen', '');
   iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
   iframe.setAttribute('title', 'YouTube player');
   iframe.id = 'yt-iframe';
   document.getElementById('player-container').appendChild(iframe);
 
-  // Skip all IFrame API setup if we just want default behavior (full volume, not muted).
-  // We only load the API if the game asked for a non-default volume or muted state,
-  // since attaching the API can sometimes cause brief pause glitches.
-  if (volume === 100 && !wantMuted) return;
-
-  // Load the IFrame API so we can call setVolume() when the player is ready.
   var tag = document.createElement('script');
   tag.src = 'https://www.youtube.com/iframe_api';
   document.head.appendChild(tag);
 
+  // ── OPTION D: ad-skip helper ────────────────────────────────────
+  // YouTube's IFrame API surfaces an undocumented but historically-
+  // stable signal during ads: getVideoData().video_id changes to a
+  // different ID temporarily while the ad plays, then reverts to the
+  // requested video. We watch for that mismatch and seek/skip when
+  // detected.
+  //
+  // Fallback heuristic: if the video has been "playing" for more than
+  // ~10 seconds and the elapsed time is still under 6 seconds, the
+  // wrapper is likely showing a pre-roll. We bump the player past it.
+  //
+  // Both checks are best-effort — when YouTube changes their internals
+  // (which they do every few months), this code degrades gracefully:
+  // no errors, just stops working for ad-skipping. The video itself
+  // still plays via autoplay=1.
+  function startAdSkipper(player, requestedId) {
+    var lastCheck = 0;
+    var stuckSinceMs = 0;
+    var loadedAt = Date.now();
+
+    setInterval(function () {
+      try {
+        var data = player.getVideoData && player.getVideoData();
+        var currentVidId = data && data.video_id;
+        var currentTime = player.getCurrentTime && player.getCurrentTime();
+        var duration = player.getDuration && player.getDuration();
+        var state = player.getPlayerState && player.getPlayerState();
+
+        // Signal 1: video_id mismatch = ad is playing.
+        // Skip past where the ad would end. Most pre-rolls are 6-30s.
+        // We seek to just before the ad would naturally end so the
+        // user doesn't lose any actual content if seekTo lands inside
+        // the requested video.
+        if (currentVidId && currentVidId !== requestedId) {
+          try {
+            // Try the most direct approach: seekTo near end of ad.
+            // If duration is short (likely an ad), seek to its end.
+            if (duration && duration < 60) {
+              player.seekTo(Math.max(0, duration - 0.5), true);
+            }
+            // Fallback: just bump 30 seconds forward and hope.
+            else if (currentTime !== undefined) {
+              player.seekTo(currentTime + 30, true);
+            }
+          } catch (e) {}
+        }
+
+        // Signal 2: stuck-on-low-elapsed-time heuristic.
+        // If we've been "playing" (state 1) for >10s wall clock but
+        // currentTime is still <6s, something's not advancing — usually
+        // a pre-roll. Bump past it.
+        if (state === 1 && currentTime !== undefined) {
+          var wallElapsed = (Date.now() - loadedAt) / 1000;
+          if (wallElapsed > 10 && currentTime < 6 && wallElapsed - lastCheck > 5) {
+            try {
+              player.seekTo(currentTime + 7, true);
+              lastCheck = wallElapsed;
+            } catch (e) {}
+          }
+        }
+      } catch (e) {}
+    }, 1000);
+  }
+
   window.onYouTubeIframeAPIReady = function () {
     try {
-      new YT.Player('yt-iframe', {
+      var player = new YT.Player('yt-iframe', {
         events: {
           'onReady': function (e) {
-            applyVolume(e.target);
+            try {
+              e.target.playVideo();
+
+              // Start the ad-skipper a couple seconds in so the player
+              // has time to actually load before we start poking at it.
+              setTimeout(function () {
+                startAdSkipper(e.target, id);
+              }, 2000);
+
+              if (wantUnmuted) {
+                var attempts = 0;
+                var tryUnmute = function () {
+                  attempts++;
+                  try {
+                    e.target.unMute();
+                    e.target.setVolume(100);
+                  } catch (err) {}
+                  setTimeout(function () {
+                    try {
+                      if (e.target.isMuted && e.target.isMuted() && attempts < 5) {
+                        tryUnmute();
+                      }
+                    } catch (err) {}
+                  }, 500);
+                };
+                setTimeout(tryUnmute, 1000);
+              }
+            } catch (err) {}
           },
           'onStateChange': function (e) {
-            // When playback starts (state 1), reassert the volume once.
-            // Some browsers reset volume on unmute transitions.
-            if (e.data === 1) applyVolume(e.target);
+            if (e.data === 1 && wantUnmuted) {
+              try {
+                e.target.unMute();
+                e.target.setVolume(100);
+              } catch (err) {}
+            }
           }
         }
       });
     } catch (err) {}
   };
-
-  function applyVolume(player) {
-    try {
-      player.setVolume(volume);
-      // If we're not supposed to be muted, make sure we aren't.
-      // (YouTube keeps a separate mute flag from volume level.)
-      if (!wantMuted) player.unMute();
-    } catch (err) {}
-  }
 })();
 </script>
 </body>
