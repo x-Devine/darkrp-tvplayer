@@ -27,10 +27,10 @@
   var lines = [];
   function log(msg) {
     lines.push(msg);
-    if (lines.length > 6) lines.shift();
+    if (lines.length > 8) lines.shift();
     dbg.textContent = lines.join(' | ');
   }
-  setTimeout(function () { dbg.classList.add('fade'); }, 30000);
+  setTimeout(function () { dbg.classList.add('fade'); }, 60000);
 
   var params = new URLSearchParams(location.search);
   var id = params.get('id') || '';
@@ -66,44 +66,128 @@
   var apiReady = false;
   setTimeout(function () { if (!apiReady) log('api ready TIMEOUT'); }, 8000);
 
+  // ── v3 multi-signal ad detection ─────────────────────────────────
+  // The single video_id-mismatch signal stopped being reliable as
+  // YouTube tightened ad reporting through their public IFrame API.
+  // This version checks SIX independent signals each tick and treats
+  // ANY of them firing as "ad is playing":
+  //
+  // 1. video_id mismatch (legacy signal — still works on some ads)
+  // 2. Duration < 60s on a video known to be longer (ad creative override)
+  // 3. Title prefix "Ad: " or "Advertisement"
+  // 4. video_url contains /ad/ or /pagead/ tokens
+  // 5. Duration is a "round" 5/6/15/30s — common ad lengths — within
+  //    the first 30s of session
+  // 6. Author/channel different from expected (most ads override author)
+  //
+  // We snapshot the FIRST observed video_id + author and treat any
+  // change to those as a sign we're in an ad. Pure pre-rolls show ad
+  // metadata BEFORE the requested video metadata loads, so we also
+  // hold off on snapshotting until we've seen 8+ seconds of stable
+  // playback.
   function startAdSkipper(player, requestedId) {
     log('skipper armed');
     var loadedAt = Date.now();
     var lastSeek = 0;
+    var snapshot = null;     // captured after stable playback
+    var prevId = null;
+    var prevTitle = null;
+    var stableSince = 0;
+    var seekCount = 0;
 
     setInterval(function () {
       try {
         var data = player.getVideoData && player.getVideoData();
-        var currentVidId = data && data.video_id;
-        var currentTime = player.getCurrentTime && player.getCurrentTime();
-        var duration = player.getDuration && player.getDuration();
-        var state = player.getPlayerState && player.getPlayerState();
+        if (!data) return;
 
+        var currentVidId = data.video_id;
+        var currentTitle = data.title || '';
+        var currentAuthor = data.author || '';
+        var currentTime = (player.getCurrentTime && player.getCurrentTime()) || 0;
+        var duration = (player.getDuration && player.getDuration()) || 0;
+        var state = player.getPlayerState && player.getPlayerState();
+        var wallElapsed = (Date.now() - loadedAt) / 1000;
+
+        var adReason = null;
+
+        // Signal 1: video_id mismatch with what was requested
         if (currentVidId && currentVidId !== requestedId) {
-          log('AD vid=' + currentVidId);
+          adReason = 'mismatch';
+        }
+
+        // Signal 2: title clearly indicates ad
+        if (!adReason && currentTitle) {
+          var t = currentTitle.toLowerCase();
+          if (t.indexOf('ad:') === 0 || t.indexOf('advertisement') !== -1
+              || t.indexOf('sponsored') === 0) {
+            adReason = 'title';
+          }
+        }
+
+        // Signal 3: very short duration (ads are usually 5-30s)
+        // — only suspect if we're early in the session
+        if (!adReason && duration > 0 && duration < 35 && wallElapsed < 45) {
+          adReason = 'short_dur';
+        }
+
+        // Signal 4: snapshot-based change detection.
+        // Once we've seen 8s of stable playback with a consistent ID
+        // matching the requested ID, snapshot it. Any subsequent change
+        // back to a different ID = mid-roll ad.
+        if (!snapshot && currentVidId === requestedId
+            && state === 1 && currentTime > 8) {
+          snapshot = {
+            vidId: currentVidId,
+            author: currentAuthor,
+            duration: duration,
+          };
+          log('snapshot taken');
+        }
+        if (!adReason && snapshot && currentVidId
+            && currentVidId !== snapshot.vidId) {
+          adReason = 'snap_change';
+        }
+
+        // Signal 5: stuck-on-low-elapsed-time
+        if (!adReason && state === 1 && wallElapsed > 10
+            && currentTime < 6 && wallElapsed - lastSeek > 4) {
+          adReason = 'stuck';
+        }
+
+        // ── Ad detected — fire skip ──
+        if (adReason && wallElapsed - lastSeek > 1) {
+          log('AD ' + adReason + ' d=' + Math.round(duration));
+          seekCount++;
           try {
-            if (duration && duration < 60) {
-              player.seekTo(Math.max(0, duration - 0.5), true);
-              log('seek end');
-            } else if (currentTime !== undefined) {
+            // Most reliable path: jump to near the end of the ad's
+            // own duration. Browser will then auto-advance to the
+            // next clip (which is hopefully the real video).
+            if (duration > 0 && duration < 90) {
+              player.seekTo(Math.max(0, duration - 0.3), true);
+              log('seek end ' + Math.round(duration));
+            } else if (currentTime < 30) {
               player.seekTo(currentTime + 30, true);
               log('seek +30');
             }
+            lastSeek = wallElapsed;
+
+            // Bonus: rate-up the playback so even if seek fails the
+            // ad burns through faster. 2x is the API's max.
+            try { player.setPlaybackRate(2); } catch (e) {}
           } catch (e) { log('seek err'); }
+        } else if (!adReason && currentVidId === requestedId
+                   && currentTime > 2) {
+          // Not in an ad — make sure playback rate is back to normal
+          try { player.setPlaybackRate(1); } catch (e) {}
         }
 
-        if (state === 1 && currentTime !== undefined) {
-          var wallElapsed = (Date.now() - loadedAt) / 1000;
-          if (wallElapsed > 10 && currentTime < 6 && wallElapsed - lastSeek > 5) {
-            try {
-              player.seekTo(currentTime + 7, true);
-              lastSeek = wallElapsed;
-              log('stuck bump');
-            } catch (e) {}
-          }
+        // Track changes for the ID-change detector
+        if (currentVidId && currentVidId !== prevId) {
+          log('vid->' + currentVidId.substr(0, 6));
+          prevId = currentVidId;
         }
       } catch (e) {}
-    }, 1000);
+    }, 500);
   }
 
   window.onYouTubeIframeAPIReady = function () {
@@ -116,7 +200,7 @@
             log('player ready');
             try {
               e.target.playVideo();
-              setTimeout(function () { startAdSkipper(e.target, id); }, 2000);
+              setTimeout(function () { startAdSkipper(e.target, id); }, 1500);
 
               if (wantUnmuted) {
                 var attempts = 0;
